@@ -5,6 +5,7 @@ from pathlib import Path
 
 from stock_prediction.config import AppConfig
 from stock_prediction.data.schema import DatasetSchema, infer_column_name, infer_optional_column_name
+from stock_prediction.features.selection import build_feature_catalog
 from stock_prediction.utils.dependencies import require_dependency
 from stock_prediction.utils.io import ensure_dir, write_json
 
@@ -50,6 +51,33 @@ def infer_schema_for_frame(source: Path, frame) -> DatasetSchema:
 def infer_schema(extracted_dir: Path) -> DatasetSchema:
     source, frame = _load_supported_files(extracted_dir)[0]
     return infer_schema_for_frame(source, frame)
+
+
+def _add_derived_features(frame, symbol_column: str):
+    pd = require_dependency("pandas", "Run `uv sync` to install runtime dependencies.")
+    grouped_close = frame.groupby(symbol_column)["close"]
+    grouped_volume = frame.groupby(symbol_column)["volume"]
+
+    frame["feature_close_return_1"] = grouped_close.pct_change().replace([float("inf"), float("-inf")], 0.0)
+    frame["feature_close_return_5"] = grouped_close.pct_change(5).replace([float("inf"), float("-inf")], 0.0)
+    frame["feature_volume_return_1"] = grouped_volume.pct_change().replace([float("inf"), float("-inf")], 0.0)
+    frame["feature_intraday_return"] = ((frame["close"] - frame["open"]) / frame["open"]).replace(
+        [float("inf"), float("-inf")],
+        0.0,
+    )
+    frame["feature_high_low_spread"] = ((frame["high"] - frame["low"]) / frame["close"]).replace(
+        [float("inf"), float("-inf")],
+        0.0,
+    )
+    frame["feature_rolling_volatility_5"] = grouped_close.pct_change().rolling(5).std().reset_index(level=0, drop=True)
+    frame["feature_rolling_volatility_10"] = grouped_close.pct_change().rolling(10).std().reset_index(level=0, drop=True)
+    frame["feature_rolling_mean_return_5"] = (
+        grouped_close.pct_change().rolling(5).mean().reset_index(level=0, drop=True)
+    )
+
+    derived_columns = [column for column in frame.columns if column.startswith("feature_")]
+    frame[derived_columns] = frame[derived_columns].replace([float("inf"), float("-inf")], pd.NA).fillna(0.0)
+    return frame
 
 
 def prepare_dataset(config: AppConfig) -> PreparedDataset:
@@ -99,8 +127,15 @@ def prepare_dataset(config: AppConfig) -> PreparedDataset:
     standardized = standardized.sort_values(
         [config.experiment.symbol_column, config.experiment.date_column]
     ).reset_index(drop=True)
-    standardized["target_next_close"] = standardized.groupby(config.experiment.symbol_column)["close"].shift(-1)
-    standardized = standardized.dropna(subset=["target_next_close"]).reset_index(drop=True)
+    standardized = _add_derived_features(standardized, config.experiment.symbol_column)
+    standardized[config.experiment.target_column] = standardized.groupby(config.experiment.symbol_column)["close"].shift(-1)
+    standardized = standardized.dropna(subset=[config.experiment.target_column]).reset_index(drop=True)
+    feature_catalog = build_feature_catalog(
+        standardized,
+        target_column=config.experiment.target_column,
+        date_column=config.experiment.date_column,
+        symbol_column=config.experiment.symbol_column,
+    )
 
     ensure_dir(config.dataset.interim_dir)
     ensure_dir(config.dataset.processed_dir)
@@ -116,9 +151,10 @@ def prepare_dataset(config: AppConfig) -> PreparedDataset:
                 "low": "low",
                 "close": "close",
                 "volume": "volume",
-                "target": "target_next_close",
+                "target": config.experiment.target_column,
             },
             "inferred_schema": schemas,
+            "feature_groups": feature_catalog.as_dict(),
         },
     )
 

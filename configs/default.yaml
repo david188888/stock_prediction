@@ -10,28 +10,45 @@ dataset:
 
 experiment:
   stock_symbols: []
-  feature_columns:
-    - "open"
-    - "high"
-    - "low"
-    - "close"
-    - "volume"
-  target_column: "close"
+  feature_columns: []
+  feature_set: "auto"
+  target_column: "target_next_close"
   date_column: "date"
   symbol_column: "symbol"
   window_size: 20
   train_ratio: 0.7
   val_ratio: 0.15
   test_ratio: 0.15
-  random_seed: 42
+  seed: 42
   output_dir: "outputs"
   generate_figures: true
+  evaluation_modes:
+    - "holdout"
+    - "walk_forward"
   walk_forward_steps: 20
+  walk_forward_models:
+    - "linear_regression"
+    - "linear_regression_scaled"
+    - "arima"
+    - "lstm"
+    - "gru"
+    - "arima_residual_lstm"
+  early_stopping_patience: 5
+  min_delta: 0.0001
+  tune_arima_order: true
 
 models:
   linear_regression: {}
+  linear_regression_scaled: {}
   arima:
     order: [5, 1, 0]
+    order_grid:
+      - [1, 1, 0]
+      - [2, 1, 0]
+      - [3, 1, 0]
+      - [5, 1, 0]
+      - [2, 1, 2]
+      - [3, 1, 3]
   lstm:
     hidden_size: 64
     num_layers: 1
@@ -54,4 +71,3 @@ models:
     epochs: 20
     batch_size: 32
     learning_rate: 0.001
-

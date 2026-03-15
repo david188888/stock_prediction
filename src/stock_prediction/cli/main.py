@@ -28,7 +28,10 @@ def prepare_data(config: str = typer.Option("configs/default.yaml", help="Path t
 
 @app.command("train")
 def train_model(
-    model: str = typer.Option(..., help="Model name: linear_regression, arima, lstm, gru, arima_residual_lstm"),
+    model: str = typer.Option(
+        ...,
+        help="Model name: linear_regression, linear_regression_scaled, arima, lstm, gru, arima_residual_lstm",
+    ),
     config: str = typer.Option("configs/default.yaml", help="Path to config YAML."),
 ) -> None:
     settings = load_config(config)
@@ -39,7 +42,10 @@ def train_model(
 
 @app.command("evaluate")
 def evaluate_model(
-    model: str = typer.Option(..., help="Model name: linear_regression, arima, lstm, gru, arima_residual_lstm"),
+    model: str = typer.Option(
+        ...,
+        help="Model name: linear_regression, linear_regression_scaled, arima, lstm, gru, arima_residual_lstm",
+    ),
     config: str = typer.Option("configs/default.yaml", help="Path to config YAML."),
 ) -> None:
     settings = load_config(config)
@@ -56,4 +62,3 @@ def run_experiment(config: str = typer.Option("configs/default.yaml", help="Path
 
 if __name__ == "__main__":
     app()
-
