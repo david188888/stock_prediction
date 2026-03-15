@@ -21,7 +21,7 @@ outputs/predictions/*
 !outputs/predictions/.gitkeep
 outputs/figures/*
 !outputs/figures/.gitkeep
+outputs/.cache/
 
 models/
 artifacts/
-
