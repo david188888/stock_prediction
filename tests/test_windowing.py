@@ -3,7 +3,12 @@ import pytest
 numpy = pytest.importorskip("numpy")
 pandas = pytest.importorskip("pandas")
 
-from stock_prediction.features.windowing import create_sliding_windows, scale_and_window, time_ordered_split
+from stock_prediction.features.windowing import (
+    build_supervised_split,
+    create_sliding_windows,
+    scale_and_window,
+    time_ordered_split,
+)
 
 
 def test_create_sliding_windows_shapes():
@@ -49,3 +54,29 @@ def test_scale_and_window_preserves_split_targets_with_context():
     windowed = scale_and_window(split, ["open", "high", "low", "close", "volume"], "target_next_close", 4)
     numpy.testing.assert_array_equal(windowed.val_y, split.validation["target_next_close"].to_numpy())
     numpy.testing.assert_array_equal(windowed.test_y, split.test["target_next_close"].to_numpy())
+
+
+def test_build_supervised_split_prevents_cross_boundary_target_leakage():
+    frame = pandas.DataFrame(
+        {
+            "date": pandas.date_range("2024-01-01", periods=12),
+            "symbol": ["AAA"] * 12,
+            "close": numpy.arange(12, dtype=float),
+            "open": numpy.arange(12, dtype=float),
+            "high": numpy.arange(12, dtype=float),
+            "low": numpy.arange(12, dtype=float),
+            "volume": numpy.arange(12, dtype=float),
+        }
+    )
+    split = time_ordered_split(frame, 0.5, 0.25)
+    supervised = build_supervised_split(
+        split,
+        target_column="target_next_close",
+        date_column="date",
+        symbol_column="symbol",
+        horizon=1,
+    )
+
+    assert supervised.train["target_date"].max() < split.validation["date"].min()
+    assert supervised.validation["target_date"].max() < split.test["date"].min()
+    assert supervised.test["target_date"].max() <= split.test["date"].max()

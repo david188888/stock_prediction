@@ -24,9 +24,13 @@ class ExperimentConfig:
     stock_symbols: list[str]
     feature_columns: list[str]
     feature_set: str
+    feature_groups: dict[str, list[str]]
+    fusion_weights: dict[str, float]
     target_column: str
     date_column: str
     symbol_column: str
+    prediction_horizon: int
+    prediction_cutoff: str
     window_size: int
     train_ratio: float
     val_ratio: float
@@ -37,9 +41,11 @@ class ExperimentConfig:
     evaluation_modes: list[str]
     walk_forward_steps: int
     walk_forward_models: list[str]
+    backtest_window_type: str
     early_stopping_patience: int
     min_delta: float
     tune_arima_order: bool
+    extreme_volatility_quantile: float
 
 
 @dataclass(slots=True)
@@ -80,9 +86,19 @@ def load_config(config_path: str | Path) -> AppConfig:
         stock_symbols=list(experiment_payload["stock_symbols"]),
         feature_columns=list(experiment_payload.get("feature_columns", [])),
         feature_set=experiment_payload.get("feature_set", "auto"),
+        feature_groups={
+            key: list(value)
+            for key, value in dict(experiment_payload.get("feature_groups", {})).items()
+        },
+        fusion_weights={
+            key: float(value)
+            for key, value in dict(experiment_payload.get("fusion_weights", {})).items()
+        },
         target_column=experiment_payload["target_column"],
         date_column=experiment_payload["date_column"],
         symbol_column=experiment_payload["symbol_column"],
+        prediction_horizon=int(experiment_payload.get("prediction_horizon", 1)),
+        prediction_cutoff=str(experiment_payload.get("prediction_cutoff", "close")),
         window_size=int(experiment_payload["window_size"]),
         train_ratio=float(experiment_payload["train_ratio"]),
         val_ratio=float(experiment_payload["val_ratio"]),
@@ -93,9 +109,11 @@ def load_config(config_path: str | Path) -> AppConfig:
         evaluation_modes=list(experiment_payload.get("evaluation_modes", ["holdout"])),
         walk_forward_steps=int(experiment_payload["walk_forward_steps"]),
         walk_forward_models=list(experiment_payload.get("walk_forward_models", [])),
+        backtest_window_type=str(experiment_payload.get("backtest_window_type", "expanding")),
         early_stopping_patience=int(experiment_payload.get("early_stopping_patience", 5)),
         min_delta=float(experiment_payload.get("min_delta", 1e-4)),
         tune_arima_order=bool(experiment_payload.get("tune_arima_order", False)),
+        extreme_volatility_quantile=float(experiment_payload.get("extreme_volatility_quantile", 0.95)),
     )
 
     ratio_sum = round(experiment.train_ratio + experiment.val_ratio + experiment.test_ratio, 10)
@@ -105,5 +123,13 @@ def load_config(config_path: str | Path) -> AppConfig:
     invalid_evaluations = set(experiment.evaluation_modes) - allowed_evaluations
     if invalid_evaluations:
         raise ValueError(f"Unsupported evaluation modes: {sorted(invalid_evaluations)}")
+    if experiment.prediction_horizon < 1:
+        raise ValueError("prediction_horizon must be at least 1")
+    if experiment.prediction_cutoff != "close":
+        raise ValueError("Only prediction_cutoff='close' is supported in this version")
+    if experiment.backtest_window_type != "expanding":
+        raise ValueError("Only backtest_window_type='expanding' is supported in this version")
+    if not 0.0 < experiment.extreme_volatility_quantile < 1.0:
+        raise ValueError("extreme_volatility_quantile must be between 0 and 1")
 
     return AppConfig(dataset=dataset, experiment=experiment, models=payload["models"])

@@ -12,9 +12,19 @@ experiment:
   stock_symbols: []
   feature_columns: []
   feature_set: "auto"
+  feature_groups:
+    sentiment_primary:
+      - "feargreed"
+    text_auxiliary: []
+  fusion_weights:
+    price: 0.7
+    sentiment: 0.3
+    text: 0.0
   target_column: "target_next_close"
   date_column: "date"
   symbol_column: "symbol"
+  prediction_horizon: 1
+  prediction_cutoff: "close"
   window_size: 20
   train_ratio: 0.7
   val_ratio: 0.15
@@ -33,9 +43,11 @@ experiment:
     - "lstm"
     - "gru"
     - "arima_residual_lstm"
+  backtest_window_type: "expanding"
   early_stopping_patience: 5
   min_delta: 0.0001
   tune_arima_order: true
+  extreme_volatility_quantile: 0.95
 
 models:
   linear_regression: {}

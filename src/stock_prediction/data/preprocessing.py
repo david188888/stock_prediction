@@ -128,13 +128,16 @@ def prepare_dataset(config: AppConfig) -> PreparedDataset:
         [config.experiment.symbol_column, config.experiment.date_column]
     ).reset_index(drop=True)
     standardized = _add_derived_features(standardized, config.experiment.symbol_column)
-    standardized[config.experiment.target_column] = standardized.groupby(config.experiment.symbol_column)["close"].shift(-1)
-    standardized = standardized.dropna(subset=[config.experiment.target_column]).reset_index(drop=True)
+    standardized["feature_date"] = standardized[config.experiment.date_column]
+    standardized["target_date"] = standardized.groupby(config.experiment.symbol_column)[
+        config.experiment.date_column
+    ].shift(-config.experiment.prediction_horizon)
     feature_catalog = build_feature_catalog(
         standardized,
         target_column=config.experiment.target_column,
         date_column=config.experiment.date_column,
         symbol_column=config.experiment.symbol_column,
+        configured_groups=config.experiment.feature_groups,
     )
 
     ensure_dir(config.dataset.interim_dir)
@@ -151,6 +154,8 @@ def prepare_dataset(config: AppConfig) -> PreparedDataset:
                 "low": "low",
                 "close": "close",
                 "volume": "volume",
+                "feature_date": "feature_date",
+                "target_date": "target_date",
                 "target": config.experiment.target_column,
             },
             "inferred_schema": schemas,

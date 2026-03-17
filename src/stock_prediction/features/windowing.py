@@ -23,6 +23,17 @@ class WindowedData:
     scaler: object
 
 
+@dataclass(slots=True)
+class MultiBranchWindowedData:
+    train_inputs: dict[str, "np.ndarray"]
+    val_inputs: dict[str, "np.ndarray"]
+    test_inputs: dict[str, "np.ndarray"]
+    train_y: "np.ndarray"
+    val_y: "np.ndarray"
+    test_y: "np.ndarray"
+    scalers: dict[str, object]
+
+
 def time_ordered_split(frame, train_ratio: float, val_ratio: float) -> TimeSeriesSplit:
     total = len(frame)
     train_end = int(total * train_ratio)
@@ -31,6 +42,81 @@ def time_ordered_split(frame, train_ratio: float, val_ratio: float) -> TimeSerie
         train=frame.iloc[:train_end].copy(),
         validation=frame.iloc[train_end:val_end].copy(),
         test=frame.iloc[val_end:].copy(),
+    )
+
+
+def build_supervised_frame(
+    frame,
+    *,
+    target_column: str,
+    date_column: str,
+    symbol_column: str,
+    horizon: int,
+    extra_target_sources: dict[str, str] | None = None,
+):
+    extra_target_sources = extra_target_sources or {}
+    pd = require_dependency("pandas", "Run `uv sync` to install runtime dependencies.")
+    if frame.empty:
+        empty = frame.copy()
+        for column in ["feature_date", "current_close", target_column, "target_date", *extra_target_sources.keys()]:
+            if column not in empty.columns:
+                empty[column] = pd.Series(dtype="float64" if column != "feature_date" and column != "target_date" else "datetime64[ns]")
+        return empty
+
+    supervised = frame.copy()
+    supervised["feature_date"] = supervised.get("feature_date", supervised[date_column])
+    supervised["current_close"] = supervised["close"]
+
+    grouped = supervised.groupby(symbol_column, sort=False)
+    supervised[target_column] = grouped["close"].shift(-horizon)
+    supervised["target_date"] = grouped[date_column].shift(-horizon)
+    for target_name, source_column in extra_target_sources.items():
+        supervised[target_name] = grouped[source_column].shift(-horizon)
+
+    required = [target_column, "target_date", "current_close"]
+    required.extend(extra_target_sources.keys())
+    supervised = supervised.dropna(subset=required).reset_index(drop=True)
+
+    if "feature_date" in supervised.columns:
+        supervised["feature_date"] = pd.to_datetime(supervised["feature_date"], errors="coerce")
+    supervised["target_date"] = pd.to_datetime(supervised["target_date"], errors="coerce")
+    return supervised
+
+
+def build_supervised_split(
+    split: TimeSeriesSplit,
+    *,
+    target_column: str,
+    date_column: str,
+    symbol_column: str,
+    horizon: int,
+    extra_target_sources: dict[str, str] | None = None,
+) -> TimeSeriesSplit:
+    return TimeSeriesSplit(
+        train=build_supervised_frame(
+            split.train,
+            target_column=target_column,
+            date_column=date_column,
+            symbol_column=symbol_column,
+            horizon=horizon,
+            extra_target_sources=extra_target_sources,
+        ),
+        validation=build_supervised_frame(
+            split.validation,
+            target_column=target_column,
+            date_column=date_column,
+            symbol_column=symbol_column,
+            horizon=horizon,
+            extra_target_sources=extra_target_sources,
+        ),
+        test=build_supervised_frame(
+            split.test,
+            target_column=target_column,
+            date_column=date_column,
+            symbol_column=symbol_column,
+            horizon=horizon,
+            extra_target_sources=extra_target_sources,
+        ),
     )
 
 
@@ -77,19 +163,21 @@ def scale_and_window(
     window_size: int,
 ) -> WindowedData:
     np = require_dependency("numpy", "Run `uv sync` to install runtime dependencies.")
+    pd = require_dependency("pandas", "Run `uv sync` to install runtime dependencies.")
     sklearn_preprocessing = require_dependency(
         "sklearn.preprocessing",
         "Run `uv sync` to install runtime dependencies.",
     )
     scaler = sklearn_preprocessing.StandardScaler()
     feature_count = len(feature_columns)
+    fill_values = split.train[feature_columns].median(numeric_only=True).fillna(0.0)
 
     def _transform(frame):
         if frame.empty:
             return np.empty((0, feature_count))
-        return scaler.transform(frame[feature_columns].to_numpy())
+        return scaler.transform(frame[feature_columns].fillna(fill_values).to_numpy(dtype=float))
 
-    train_values = scaler.fit_transform(split.train[feature_columns].to_numpy())
+    train_values = scaler.fit_transform(split.train[feature_columns].fillna(fill_values).to_numpy(dtype=float))
     val_values = _transform(split.validation)
     test_values = _transform(split.test)
 
@@ -116,4 +204,85 @@ def scale_and_window(
         test_x=np.asarray(test_x, dtype=float),
         test_y=np.asarray(test_y, dtype=float),
         scaler=scaler,
+    )
+
+
+def scale_and_window_branches(
+    split: TimeSeriesSplit,
+    branch_feature_columns: dict[str, list[str]],
+    target_column: str,
+    window_size: int,
+) -> MultiBranchWindowedData:
+    np = require_dependency("numpy", "Run `uv sync` to install runtime dependencies.")
+    pd = require_dependency("pandas", "Run `uv sync` to install runtime dependencies.")
+    sklearn_preprocessing = require_dependency(
+        "sklearn.preprocessing",
+        "Run `uv sync` to install runtime dependencies.",
+    )
+
+    train_targets = split.train[target_column].to_numpy(dtype=float)
+    val_targets = split.validation[target_column].to_numpy(dtype=float)
+    test_targets = split.test[target_column].to_numpy(dtype=float)
+
+    dummy_train = np.zeros((len(train_targets), 1), dtype=float)
+    dummy_val = np.zeros((len(val_targets), 1), dtype=float)
+    dummy_test = np.zeros((len(test_targets), 1), dtype=float)
+    _, train_y = create_sliding_windows(dummy_train, train_targets, window_size)
+    val_x_dummy, val_y = create_contextual_windows(dummy_train, train_targets, dummy_val, val_targets, window_size)
+    test_context_dummy = np.concatenate([dummy_train, dummy_val], axis=0)
+    test_context_targets = np.concatenate([train_targets, val_targets], axis=0)
+    test_x_dummy, test_y = create_contextual_windows(
+        test_context_dummy,
+        test_context_targets,
+        dummy_test,
+        test_targets,
+        window_size,
+    )
+
+    del val_x_dummy, test_x_dummy
+
+    train_inputs: dict[str, np.ndarray] = {}
+    val_inputs: dict[str, np.ndarray] = {}
+    test_inputs: dict[str, np.ndarray] = {}
+    scalers: dict[str, object] = {}
+
+    for branch_name, feature_columns in branch_feature_columns.items():
+        if not feature_columns:
+            continue
+        scaler = sklearn_preprocessing.StandardScaler()
+        fill_values = split.train[feature_columns].median(numeric_only=True).fillna(0.0)
+        train_values = scaler.fit_transform(split.train[feature_columns].fillna(fill_values).to_numpy(dtype=float))
+
+        def _transform(frame):
+            if frame.empty:
+                return np.empty((0, len(feature_columns)))
+            return scaler.transform(frame[feature_columns].fillna(fill_values).to_numpy(dtype=float))
+
+        val_values = _transform(split.validation)
+        test_values = _transform(split.test)
+
+        train_x, _ = create_sliding_windows(train_values, train_targets, window_size)
+        val_x, _ = create_contextual_windows(train_values, train_targets, val_values, val_targets, window_size)
+        test_context_values = np.concatenate([train_values, val_values], axis=0)
+        test_x, _ = create_contextual_windows(
+            test_context_values,
+            test_context_targets,
+            test_values,
+            test_targets,
+            window_size,
+        )
+
+        train_inputs[branch_name] = np.asarray(train_x, dtype=float)
+        val_inputs[branch_name] = np.asarray(val_x, dtype=float)
+        test_inputs[branch_name] = np.asarray(test_x, dtype=float)
+        scalers[branch_name] = scaler
+
+    return MultiBranchWindowedData(
+        train_inputs=train_inputs,
+        val_inputs=val_inputs,
+        test_inputs=test_inputs,
+        train_y=np.asarray(train_y, dtype=float),
+        val_y=np.asarray(val_y, dtype=float),
+        test_y=np.asarray(test_y, dtype=float),
+        scalers=scalers,
     )

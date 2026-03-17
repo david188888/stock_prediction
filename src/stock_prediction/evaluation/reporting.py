@@ -52,6 +52,7 @@ def _aggregate_metrics(frame):
                 "median_rmse": round(float(group["rmse"].median()), 6),
                 "mean_mae": round(float(group["mae"].mean()), 6),
                 "median_mae": round(float(group["mae"].median()), 6),
+                "mean_da": round(float(group["da"].dropna().mean()), 6) if "da" in group.columns and group["da"].notna().any() else pd.NA,
                 "best_symbol": ranked.iloc[0]["symbol"],
                 "worst_symbol": ranked.iloc[-1]["symbol"],
             }
@@ -59,7 +60,7 @@ def _aggregate_metrics(frame):
     summary = pd.DataFrame(rows).sort_values(["evaluation", "mean_rmse", "median_rmse"]).reset_index(drop=True)
     summary["rank"] = summary.groupby("evaluation")["mean_rmse"].rank(method="dense").astype("Int64")
     return summary[
-        ["evaluation", "rank", "model", "count", "mean_rmse", "median_rmse", "mean_mae", "median_mae", "best_symbol", "worst_symbol"]
+        ["evaluation", "rank", "model", "count", "mean_rmse", "median_rmse", "mean_mae", "median_mae", "mean_da", "best_symbol", "worst_symbol"]
     ]
 
 
@@ -88,7 +89,7 @@ def save_conclusion_markdown(path: Path, frame) -> None:
     best_by_eval = aggregated.sort_values(["evaluation", "mean_rmse", "median_rmse"]).groupby("evaluation").head(1)
     for _, row in best_by_eval.iterrows():
         lines.append(
-            f"- `{row['evaluation']}` 最优模型是 `{row['model']}`，平均 RMSE 为 `{row['mean_rmse']}`，最佳股票为 `{row['best_symbol']}`。"
+            f"- `{row['evaluation']}` 最优模型是 `{row['model']}`，平均 RMSE 为 `{row['mean_rmse']}`，方向准确率为 `{row['mean_da']}`，最佳股票为 `{row['best_symbol']}`。"
         )
 
     holdout_best = best_by_eval[best_by_eval["evaluation"] == "holdout"]["model"].tolist()
@@ -177,3 +178,71 @@ def save_walk_forward_error_plot(path: Path, frame, title: str) -> None:
     plt.tight_layout()
     plt.savefig(path)
     plt.close()
+
+
+def _safe_model_column_name(model_name: str) -> str:
+    return model_name.replace("-", "_")
+
+
+def _annotate_extreme_volatility(frame, quantile: float):
+    pd = require_dependency("pandas", "Run `uv sync` to install runtime dependencies.")
+    if frame.empty:
+        return frame
+
+    annotated = frame.copy()
+    annotated["abs_return_1d"] = ((annotated["actual_close"] - annotated["current_close"]) / annotated["current_close"]).abs()
+    thresholds = annotated.groupby("symbol", dropna=False)["abs_return_1d"].transform(lambda series: series.quantile(quantile))
+    annotated["is_extreme_volatility"] = annotated["abs_return_1d"] >= thresholds
+    annotated["event_id"] = pd.NA
+
+    for (evaluation, symbol), group in annotated.groupby(["evaluation", "symbol"], sort=False, dropna=False):
+        event_index = 0
+        previous_flag = False
+        event_ids: list[object] = []
+        for flag in group["is_extreme_volatility"].tolist():
+            flag = bool(flag)
+            if flag:
+                if not previous_flag:
+                    event_index += 1
+                event_ids.append(f"{symbol}-{evaluation}-EV{event_index:03d}")
+            else:
+                event_ids.append(pd.NA)
+            previous_flag = flag
+        annotated.loc[group.index, "event_id"] = event_ids
+
+    return annotated
+
+
+def build_model_comparison_frame(frame, *, model_order: list[str], extreme_volatility_quantile: float):
+    pd = require_dependency("pandas", "Run `uv sync` to install runtime dependencies.")
+    if frame.empty:
+        return pd.DataFrame()
+
+    id_columns = [
+        "evaluation",
+        "symbol",
+        "date",
+        "feature_date",
+        "target_date",
+        "current_close",
+        "actual_close",
+        "split_start_date",
+    ]
+    base = frame[id_columns].drop_duplicates().copy()
+
+    for model_name in model_order:
+        model_frame = frame[frame["model"] == model_name].copy()
+        if model_frame.empty:
+            continue
+        safe_name = _safe_model_column_name(model_name)
+        renamed = model_frame[id_columns + ["predicted", "abs_error", "direction_correct"]].rename(
+            columns={
+                "predicted": f"pred_{safe_name}",
+                "abs_error": f"abs_error_{safe_name}",
+                "direction_correct": f"dir_correct_{safe_name}",
+            }
+        )
+        base = base.merge(renamed, on=id_columns, how="left")
+
+    base = base.sort_values(["evaluation", "symbol", "target_date", "feature_date"]).reset_index(drop=True)
+    return _annotate_extreme_volatility(base, quantile=extreme_volatility_quantile)

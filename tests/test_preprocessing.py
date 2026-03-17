@@ -42,9 +42,18 @@ def test_prepare_dataset_uses_configured_target_column(tmp_path):
                 "  stock_symbols: []",
                 "  feature_columns: []",
                 "  feature_set: auto",
+                "  feature_groups:",
+                "    sentiment_primary: [feargreed]",
+                "    text_auxiliary: []",
+                "  fusion_weights:",
+                "    price: 0.7",
+                "    sentiment: 0.3",
+                "    text: 0.0",
                 "  target_column: target_next_close",
                 "  date_column: date",
                 "  symbol_column: symbol",
+                "  prediction_horizon: 1",
+                "  prediction_cutoff: close",
                 "  window_size: 3",
                 "  train_ratio: 0.6",
                 "  val_ratio: 0.2",
@@ -55,9 +64,11 @@ def test_prepare_dataset_uses_configured_target_column(tmp_path):
                 "  evaluation_modes: [holdout]",
                 "  walk_forward_steps: 2",
                 "  walk_forward_models: [linear_regression]",
+                "  backtest_window_type: expanding",
                 "  early_stopping_patience: 2",
                 "  min_delta: 0.0001",
                 "  tune_arima_order: false",
+                "  extreme_volatility_quantile: 0.95",
                 "models:",
                 "  linear_regression: {}",
                 "  linear_regression_scaled: {}",
@@ -92,6 +103,8 @@ def test_prepare_dataset_uses_configured_target_column(tmp_path):
 
     config = load_config(config_path)
     prepared = prepare_dataset(config)
-    assert config.experiment.target_column in prepared.dataframe.columns
+    assert config.experiment.target_column not in prepared.dataframe.columns
+    assert "feature_date" in prepared.dataframe.columns
+    assert "target_date" in prepared.dataframe.columns
     assert "feature_close_return_1" in prepared.dataframe.columns
     assert Path(config.dataset.schema_path).exists()
