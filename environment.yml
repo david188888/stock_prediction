@@ -4,6 +4,7 @@ channels:
 dependencies:
   - python=3.11
   - pip
+  - arch>=7.0
   - kaggle>=1.6.17
   - matplotlib>=3.9
   - numpy>=1.26

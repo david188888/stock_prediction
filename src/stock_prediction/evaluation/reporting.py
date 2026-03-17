@@ -41,27 +41,53 @@ def _aggregate_metrics(frame):
         return pd.DataFrame()
 
     rows = []
-    for (evaluation, model), group in frame.groupby(["evaluation", "model"], dropna=False):
+    group_columns = ["evaluation", "model"]
+    for optional in ["experiment_key", "price_column", "prediction_horizon", "window_size"]:
+        if optional in frame.columns:
+            group_columns.insert(-1, optional)
+    for group_key, group in frame.groupby(group_columns, dropna=False):
+        if not isinstance(group_key, tuple):
+            group_key = (group_key,)
+        key_map = dict(zip(group_columns, group_key, strict=False))
         ranked = group.sort_values("rmse")
-        rows.append(
-            {
-                "evaluation": evaluation,
-                "model": model,
-                "count": len(group),
-                "mean_rmse": round(float(group["rmse"].mean()), 6),
-                "median_rmse": round(float(group["rmse"].median()), 6),
-                "mean_mae": round(float(group["mae"].mean()), 6),
-                "median_mae": round(float(group["mae"].median()), 6),
-                "mean_da": round(float(group["da"].dropna().mean()), 6) if "da" in group.columns and group["da"].notna().any() else pd.NA,
-                "best_symbol": ranked.iloc[0]["symbol"],
-                "worst_symbol": ranked.iloc[-1]["symbol"],
-            }
-        )
-    summary = pd.DataFrame(rows).sort_values(["evaluation", "mean_rmse", "median_rmse"]).reset_index(drop=True)
-    summary["rank"] = summary.groupby("evaluation")["mean_rmse"].rank(method="dense").astype("Int64")
-    return summary[
-        ["evaluation", "rank", "model", "count", "mean_rmse", "median_rmse", "mean_mae", "median_mae", "mean_da", "best_symbol", "worst_symbol"]
+        row = {
+            "count": len(group),
+            "mean_rmse": round(float(group["rmse"].mean()), 6),
+            "median_rmse": round(float(group["rmse"].median()), 6),
+            "mean_mae": round(float(group["mae"].mean()), 6),
+            "median_mae": round(float(group["mae"].median()), 6),
+            "mean_da": round(float(group["da"].dropna().mean()), 6) if "da" in group.columns and group["da"].notna().any() else pd.NA,
+            "best_symbol": ranked.iloc[0]["symbol"],
+            "worst_symbol": ranked.iloc[-1]["symbol"],
+        }
+        row.update(key_map)
+        rows.append(row)
+    sort_columns = [column for column in ["experiment_key", "evaluation", "mean_rmse", "median_rmse"] if column in rows[0]]
+    summary = pd.DataFrame(rows).sort_values(sort_columns).reset_index(drop=True)
+    rank_group_columns = [column for column in ["experiment_key", "evaluation"] if column in summary.columns]
+    summary["rank"] = summary.groupby(rank_group_columns)["mean_rmse"].rank(method="dense").astype("Int64")
+    ordered_columns = [
+        column
+        for column in [
+            "experiment_key",
+            "price_column",
+            "prediction_horizon",
+            "window_size",
+            "evaluation",
+            "rank",
+            "model",
+            "count",
+            "mean_rmse",
+            "median_rmse",
+            "mean_mae",
+            "median_mae",
+            "mean_da",
+            "best_symbol",
+            "worst_symbol",
+        ]
+        if column in summary.columns
     ]
+    return summary[ordered_columns]
 
 
 def save_summary_markdown(path: Path, frame) -> None:
@@ -86,21 +112,38 @@ def save_conclusion_markdown(path: Path, frame) -> None:
         path.write_text("\n".join(lines), encoding="utf-8")
         return
 
-    best_by_eval = aggregated.sort_values(["evaluation", "mean_rmse", "median_rmse"]).groupby("evaluation").head(1)
+    best_group_columns = [column for column in ["experiment_key", "evaluation"] if column in aggregated.columns]
+    best_by_eval = aggregated.sort_values(
+        [column for column in ["experiment_key", "evaluation", "mean_rmse", "median_rmse"] if column in aggregated.columns]
+    ).groupby(best_group_columns).head(1)
     for _, row in best_by_eval.iterrows():
+        prefix = ""
+        if "experiment_key" in row:
+            prefix = f"[{row['experiment_key']}] "
         lines.append(
-            f"- `{row['evaluation']}` 最优模型是 `{row['model']}`，平均 RMSE 为 `{row['mean_rmse']}`，方向准确率为 `{row['mean_da']}`，最佳股票为 `{row['best_symbol']}`。"
+            f"- {prefix}`{row['evaluation']}` 最优模型是 `{row['model']}`，平均 RMSE 为 `{row['mean_rmse']}`，方向准确率为 `{row['mean_da']}`，最佳股票为 `{row['best_symbol']}`。"
         )
 
-    holdout_best = best_by_eval[best_by_eval["evaluation"] == "holdout"]["model"].tolist()
-    walk_best = best_by_eval[best_by_eval["evaluation"] == "walk_forward"]["model"].tolist()
-    if holdout_best and walk_best:
-        consistency = "一致" if holdout_best[0] == walk_best[0] else "不一致"
-        lines.append(f"- holdout 与 walk-forward 的最优模型{consistency}。")
+    if "experiment_key" in best_by_eval.columns:
+        for experiment_key, group in best_by_eval.groupby("experiment_key", dropna=False):
+            holdout_best = group[group["evaluation"] == "holdout"]["model"].tolist()
+            walk_best = group[group["evaluation"] == "walk_forward"]["model"].tolist()
+            if holdout_best and walk_best:
+                consistency = "一致" if holdout_best[0] == walk_best[0] else "不一致"
+                lines.append(f"- `{experiment_key}` 下 holdout 与 walk-forward 的最优模型{consistency}。")
+    else:
+        holdout_best = best_by_eval[best_by_eval["evaluation"] == "holdout"]["model"].tolist()
+        walk_best = best_by_eval[best_by_eval["evaluation"] == "walk_forward"]["model"].tolist()
+        if holdout_best and walk_best:
+            consistency = "一致" if holdout_best[0] == walk_best[0] else "不一致"
+            lines.append(f"- holdout 与 walk-forward 的最优模型{consistency}。")
 
     if {"arima", "arima_residual_lstm"}.issubset(set(frame["model"].unique())):
-        hybrid = frame[frame["model"] == "arima_residual_lstm"].set_index(["symbol", "evaluation"])
-        arima = frame[frame["model"] == "arima"].set_index(["symbol", "evaluation"])
+        join_columns = ["symbol", "evaluation"]
+        if "experiment_key" in frame.columns:
+            join_columns = ["experiment_key", *join_columns]
+        hybrid = frame[frame["model"] == "arima_residual_lstm"].set_index(join_columns)
+        arima = frame[frame["model"] == "arima"].set_index(join_columns)
         overlap = hybrid.join(arima, lsuffix="_hybrid", rsuffix="_arima", how="inner")
         if not overlap.empty:
             delta = float((overlap["rmse_hybrid"] - overlap["rmse_arima"]).mean())
@@ -219,6 +262,7 @@ def build_model_comparison_frame(frame, *, model_order: list[str], extreme_volat
         return pd.DataFrame()
 
     id_columns = [
+        "experiment_key",
         "evaluation",
         "symbol",
         "date",
@@ -227,7 +271,11 @@ def build_model_comparison_frame(frame, *, model_order: list[str], extreme_volat
         "current_close",
         "actual_close",
         "split_start_date",
+        "prediction_horizon",
+        "window_size",
+        "price_column",
     ]
+    id_columns = [column for column in id_columns if column in frame.columns]
     base = frame[id_columns].drop_duplicates().copy()
 
     for model_name in model_order:

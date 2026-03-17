@@ -1,13 +1,20 @@
 # Stock Prediction
 
-Research-oriented stock price prediction project aligned with the proposal in [report.md](/Users/david/codespace/stock_prediction/report.md).
+Research-oriented stock price prediction project aligned with the proposal in [report.md](/Users/david/codespace/stock_prediction/report.md) and the Kaggle dataset [luisandresgarcia/stock-market-prediction](https://www.kaggle.com/datasets/luisandresgarcia/stock-market-prediction).
+
+## Documentation Index
+
+- Research proposal / 开题报告: [report.md](/Users/david/codespace/stock_prediction/report.md)
+- Detailed code guide / 中文代码说明书: [docs/codebase_guide.md](/Users/david/codespace/stock_prediction/docs/codebase_guide.md)
+
+If you are reviewing this repository for academic discussion, read `report.md` first and then `docs/codebase_guide.md`. The first explains the research intent; the second explains the exact code workflow, module boundaries, experiment protocol, and outputs.
 
 ## Scope
 
-- Predict next-day close price for each stock independently.
-- Provide a reproducible pipeline for download, preparation, training, evaluation, walk-forward validation, and experiment reporting.
-- Include `linear_regression`, `linear_regression_scaled`, `arima`, `lstm`, `gru`, and `arima_residual_lstm`.
-- Keep the current model family focused on the proposal scope; Transformer/TFT/GARCH are not part of this version.
+- Predict future stock prices on the Kaggle dataset using `adjclose` as the default primary price series.
+- Reuse the dataset's built-in technical indicators instead of assuming external news or sentiment inputs.
+- Provide a reproducible pipeline for download, preparation, training, holdout evaluation, full walk-forward validation, and experiment reporting.
+- Support `linear_regression`, `linear_regression_scaled`, `arima`, `garch_return`, `lstm`, `gru`, `transformer`, and `arima_residual_lstm`.
 
 ## Quick Start
 
@@ -19,123 +26,114 @@ stock-prediction prepare-data --config configs/default.yaml
 stock-prediction run-experiment --config configs/default.yaml
 ```
 
-If you are running the project from source without installing the package, use `PYTHONPATH=src` with `conda run -n stock-prediction ...`.
+If you are running from source without installing the package, use `PYTHONPATH=src`.
 
-## Current Workflow
-
-The current pipeline is:
+## Kaggle-Aligned Workflow
 
 1. `download-data`
    - Download or unpack the Kaggle dataset into `data/raw/stock-market-prediction/`.
 2. `prepare-data`
-   - Infer schema aliases for date / OHLCV / symbol columns.
-   - Standardize the core columns to `date`, `symbol`, `open`, `high`, `low`, `close`, `volume`.
-   - Build the configured target column, which is currently `target_next_close`.
-   - Add derived return / spread / volatility features and write feature-group metadata into `data/interim/schema.json`.
-3. `train` / `evaluate` / `run-experiment`
-   - Split each stock chronologically into train / validation / test.
-   - Resolve feature columns from the configured `feature_set`.
-   - Run holdout evaluation and, if enabled, expanding walk-forward evaluation.
-   - Save metrics, predictions, summaries, conclusions, and training logs under `outputs/`.
+   - Adapt Kaggle columns such as `date`, `ticker`, `open/high/low/close/adjclose`, `volume`, and the built-in technical indicators.
+   - Standardize identifiers to `symbol` and rebuild calendar features from the timestamp.
+   - Validate prices, remove invalid rows and duplicate timestamps, preserve `TARGET`, and generate `target_next_adjclose` and `target_next_close`.
+   - Build feature-group metadata in `data/interim/schema.json`.
+3. `train` / `evaluate`
+   - Train one model using the active `price_column`, `prediction_horizon`, and `window_size`.
+4. `run-experiment`
+   - Iterate across the configured `prediction_horizons`, `window_sizes`, and `selected_models`.
+   - Save per-run outputs under `outputs/` with matrix-aware filenames.
 
 ## Data Processing
 
-The prepared dataset keeps the source indicators and adds a lightweight set of derived features:
+The default dataset adapter assumes the Kaggle file contains:
 
-- Core price features: `open`, `high`, `low`, `close`, `volume`
-- Derived features: 1-day / 5-day returns, intraday return, high-low spread, rolling volatility, rolling mean return
+- Raw market data: `open`, `high`, `low`, `close`, `adjclose`, `volume`
+- Identifier and time data: `ticker` or `company`, `date`
+- Optional metadata: `age`, `market`
+- A large set of precomputed technical indicators
+- Built-in label: `TARGET` retained for reference only
+
+Prepared outputs include:
+
+- Primary targets: `target_next_adjclose` and `target_next_close`
+- Calendar features derived from `date`
+- Lightweight derived return and volatility features
 - Feature groups:
-  - `price_basic`
-  - `technical_indicators`
-  - `returns_volatility`
+  - `identity_meta`
+  - `calendar_features`
+  - `raw_price_volume`
+  - `price_returns_volatility`
+  - `provided_technical_indicators`
+  - `price_technical_primary`
   - `all_numeric_filtered`
 
-By default, the configuration uses `feature_set: auto`:
+Default modeling choices:
 
-- linear models and ARIMA use a price-oriented feature set
-- recurrent models default to a return / volatility oriented feature set
-
-## What This Version Adds
-
-- Config-driven target column and feature-set selection.
-- Validation-aware training for recurrent models with early stopping and best-epoch refit.
-- ARIMA order selection on the validation split.
-- Holdout and expanding walk-forward evaluation for every configured model.
-- Richer outputs under `outputs/metrics/` including training logs and conclusion summaries.
+- `target_column: target_next_adjclose`
+- `price_column: adjclose`
+- `split_mode: date`
+- `feature_set: auto`
 
 ## Models
 
-The repository currently supports these model entries:
-
 - `linear_regression`
-  - Plain linear baseline on tabular features
+  - Tabular price and technical-feature baseline
 - `linear_regression_scaled`
-  - Linear baseline with feature scaling as a control line
+  - Linear baseline with feature scaling
 - `arima`
-  - Univariate ARIMA with optional validation-based order selection
+  - Univariate ARIMA on the primary price series
+- `garch_return`
+  - GARCH-style return model converted back into next-step price forecasts
 - `lstm`
-  - Recurrent model with validation monitoring, early stopping, and best-epoch refit
+  - Recurrent sequence regressor with validation monitoring and early stopping
 - `gru`
-  - Recurrent model with the same training protocol as LSTM
+  - GRU variant with the same training protocol
+- `transformer`
+  - Encoder-only sequence regressor over the same windowed inputs
 - `arima_residual_lstm`
-  - Hybrid model that fits ARIMA first and then models residual dynamics with an LSTM
+  - Price-only hybrid that fits ARIMA first and then learns residual dynamics with an LSTM
+
+## Evaluation Protocol
+
+- Holdout evaluation:
+  `train -> validation selection -> train+validation refit -> test`
+- Walk-forward evaluation:
+  expanding window over the full test period by default
+- Main metrics:
+  `MAE`, `MSE`, `RMSE`
+- Supplementary metric:
+  directional accuracy `DA`
 
 ## Outputs
 
-Main output locations:
-
 - `outputs/predictions/`
-  - Per-model prediction CSV files with `evaluation`, `step`, and `split_start_date`
+  - Per-model prediction CSV files keyed by `price_column`, `prediction_horizon`, and `window_size`
 - `outputs/metrics/*_metrics.csv`
-  - Per-symbol metrics for holdout and, when enabled, walk-forward
+  - Per-symbol holdout and walk-forward metrics
 - `outputs/metrics/*_summary.md`
   - Aggregated summary tables
 - `outputs/metrics/*_conclusion.md`
-  - Short conclusion pages for direct interpretation
+  - Short interpretation pages
 - `outputs/metrics/*_training_log.csv`
-  - Training or selection logs for models that use validation
+  - Validation and model-selection logs
+- `outputs/metrics/leaderboard.csv`
+  - Matrix-wide comparison across models, horizons, and window sizes
 
-## Current Results Snapshot
+## Current Constraints
 
-The committed result files under `outputs/metrics/` are from the earlier full run that existed before the vNext refactor. They still show the previous overall pattern:
-
-- `linear_regression`
-  - mean RMSE about `1.0977`
-- `arima`
-  - mean RMSE about `5.58`
-- `arima_residual_lstm`
-  - mean RMSE about `5.5802`
-- `lstm`
-  - mean RMSE about `28.3299`
-- `gru`
-  - mean RMSE about `28.3404`
-
-Important note:
-
-- those committed metrics are useful as a historical baseline
-- they are **not** yet a full rerun of the new validation-aware vNext pipeline
-- after the refactor, the new code path has only been smoke-tested so far
-
-Smoke tests completed in the `stock-prediction` conda environment:
-
-- holdout path: `linear_regression`, `arima`, `lstm`, `arima_residual_lstm`
-- walk-forward path: `linear_regression`, `lstm`
-
-## Current Gaps
-
-- No external macro, news, or sentiment data.
-- No Transformer/TFT/GARCH implementation yet.
-- The default dataset still mixes many precomputed indicators from the source data, so feature ablation should be interpreted carefully.
-- The repository still needs a fresh full experiment rerun to regenerate `outputs/metrics/` under the new protocol.
+- The implementation is intentionally aligned to the Kaggle price-and-technical-indicator dataset only.
+- External news, sentiment, and macro data are not part of the current experiment path.
+- `TARGET` is preserved in preprocessing but is not the default supervised target in this version.
+- A fresh full experiment rerun is still required to regenerate committed outputs under the new protocol.
 
 ## Kaggle Credentials
 
 The downloader supports the standard Kaggle API setup:
 
-1. Create and activate the conda environment.
+1. Create and activate the environment.
 2. Provide either:
-   - `KAGGLE_USERNAME` and `KAGGLE_KEY` environment variables, or
+   - `KAGGLE_USERNAME` and `KAGGLE_KEY`, or
    - `~/.kaggle/kaggle.json`
 3. Run `download-data`.
 
-If credentials are missing, place the extracted dataset manually under `data/raw/stock-market-prediction/` and continue with `prepare-data`.
+If credentials are missing, extract the dataset manually under `data/raw/stock-market-prediction/` and continue with `prepare-data`.

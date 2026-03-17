@@ -8,56 +8,54 @@ from stock_prediction.utils.dependencies import require_dependency
 TECHNICAL_TOKENS = (
     "rsi",
     "macd",
-    "sma",
-    "ema",
     "stochastic",
+    "ema",
+    "sma",
     "adl",
     "mfm",
     "mfv",
-    "feargreed",
+    "lag",
     "hammer",
     "supernova",
     "vela",
     "fuerzarelativa",
     "volumenrelativo",
+    "incremento",
+    "diff",
 )
 
-CORE_TECHNICAL_TOKENS = (
-    "rsi",
-    "macd",
-    "stochastic",
-    "adl",
-)
-
-SENTIMENT_TOKENS = (
-    "feargreed",
-    "sentiment",
-    "mood",
-)
-
-TEXT_TOKENS = (
-    "feature_text_aux_",
-    "text_",
-    "news_",
+LEAKAGE_TOKENS = (
+    "target",
+    "future",
+    "lead",
+    "label",
 )
 
 
 @dataclass(slots=True)
 class FeatureCatalog:
-    price_basic: list[str]
-    technical_indicators: list[str]
-    returns_volatility: list[str]
-    sentiment_primary: list[str]
-    text_auxiliary: list[str]
+    identity_meta: list[str]
+    calendar_features: list[str]
+    raw_price_volume: list[str]
+    price_returns_volatility: list[str]
+    provided_technical_indicators: list[str]
     all_numeric_filtered: list[str]
 
     def as_dict(self) -> dict[str, list[str]]:
+        combined_primary = list(
+            dict.fromkeys(
+                self.raw_price_volume
+                + self.price_returns_volatility
+                + self.provided_technical_indicators
+            )
+        )
         return {
-            "price_basic": self.price_basic,
-            "technical_indicators": self.technical_indicators,
-            "returns_volatility": self.returns_volatility,
-            "sentiment_primary": self.sentiment_primary,
-            "text_auxiliary": self.text_auxiliary,
+            "identity_meta": self.identity_meta,
+            "calendar_features": self.calendar_features,
+            "raw_price_volume": self.raw_price_volume,
+            "price_returns_volatility": self.price_returns_volatility,
+            "provided_technical_indicators": self.provided_technical_indicators,
+            "price_technical_primary": combined_primary,
             "all_numeric_filtered": self.all_numeric_filtered,
         }
 
@@ -73,7 +71,7 @@ def _filtered_numeric_columns(frame, excluded: set[str]) -> list[str]:
     seen_signatures: dict[int, str] = {}
     for column in numeric:
         series = frame[column]
-        if float(series.isna().mean()) > 0.35:
+        if float(series.isna().mean()) > 0.65:
             continue
         if series.nunique(dropna=True) <= 1:
             continue
@@ -91,6 +89,15 @@ def _configured_columns(frame, configured_groups: dict[str, list[str]], group_na
     return [column for column in configured if column in frame.columns]
 
 
+def _is_leakage_column(column: str, target_column: str) -> bool:
+    normalized = column.lower()
+    if normalized == target_column.lower():
+        return True
+    if normalized in {"target", "feature_date", "target_date"}:
+        return True
+    return any(token in normalized for token in LEAKAGE_TOKENS)
+
+
 def build_feature_catalog(
     frame,
     target_column: str,
@@ -98,64 +105,93 @@ def build_feature_catalog(
     symbol_column: str,
     *,
     configured_groups: dict[str, list[str]] | None = None,
+    price_column: str = "adjclose",
 ) -> FeatureCatalog:
     configured_groups = configured_groups or {}
-    excluded = {target_column, date_column, symbol_column}
-    filtered = _filtered_numeric_columns(frame, excluded)
-
-    sentiment_primary = _configured_columns(frame, configured_groups, "sentiment_primary")
-    if not sentiment_primary:
-        sentiment_primary = [
-            column
-            for column in filtered
-            if any(token in column.lower() for token in SENTIMENT_TOKENS)
-        ]
-
-    text_auxiliary = _configured_columns(frame, configured_groups, "text_auxiliary")
-    if not text_auxiliary:
-        text_auxiliary = [
-            column
-            for column in filtered
-            if any(token in column.lower() for token in TEXT_TOKENS)
-        ]
-
-    excluded_dynamic = set(sentiment_primary) | set(text_auxiliary)
-
-    price_basic = [column for column in ["open", "high", "low", "close", "volume"] if column in frame.columns]
-
-    technical = [
+    excluded = {
+        target_column,
+        date_column,
+        symbol_column,
+        "feature_date",
+        "target_date",
+        "target_next_close",
+        "target_next_adjclose",
+        "TARGET",
+    }
+    filtered = [
         column
-        for column in filtered
-        if column not in excluded_dynamic
-        if any(token in column.lower() for token in TECHNICAL_TOKENS)
+        for column in _filtered_numeric_columns(frame, excluded)
+        if not _is_leakage_column(column, target_column)
     ]
-    returns_volatility = [
+
+    identity_meta = [column for column in ["age"] if column in frame.columns]
+    calendar_features = [
+        column
+        for column in [
+            "year",
+            "month",
+            "day",
+            "hour",
+            "minute",
+            "feature_year",
+            "feature_month",
+            "feature_day",
+            "feature_day_of_week",
+            "feature_is_month_start",
+            "feature_is_month_end",
+            "feature_hour",
+            "feature_minute",
+        ]
+        if column in filtered
+    ]
+    raw_price_volume = [
+        column
+        for column in ["open", "high", "low", "close", "adjclose", "volume"]
+        if column in filtered or column == price_column
+        if column in frame.columns
+    ]
+    price_returns_volatility = [
         column
         for column in filtered
-        if column not in excluded_dynamic
         if column.startswith("feature_")
-        or any(token in column.lower() for token in CORE_TECHNICAL_TOKENS)
+        and column not in calendar_features
     ]
-
-    technical_indicators = list(dict.fromkeys(price_basic + technical))
-    returns_volatility = list(dict.fromkeys(returns_volatility))
-    if not returns_volatility:
-        returns_volatility = price_basic.copy()
+    provided_technical_indicators = _configured_columns(
+        frame,
+        configured_groups,
+        "provided_technical_indicators",
+    )
+    if not provided_technical_indicators:
+        blocked = set(identity_meta) | set(calendar_features) | set(raw_price_volume) | set(price_returns_volatility)
+        provided_technical_indicators = [
+            column
+            for column in filtered
+            if column not in blocked
+            if any(token in column.lower() for token in TECHNICAL_TOKENS)
+            or not column.startswith("feature_")
+        ]
+    all_numeric_filtered = [
+        column
+        for column in filtered
+        if column not in identity_meta
+    ]
 
     return FeatureCatalog(
-        price_basic=price_basic,
-        technical_indicators=technical_indicators or price_basic.copy(),
-        returns_volatility=returns_volatility,
-        sentiment_primary=list(dict.fromkeys(sentiment_primary)),
-        text_auxiliary=list(dict.fromkeys(text_auxiliary)),
-        all_numeric_filtered=filtered,
+        identity_meta=list(dict.fromkeys(identity_meta)),
+        calendar_features=list(dict.fromkeys(calendar_features)),
+        raw_price_volume=list(dict.fromkeys(raw_price_volume)),
+        price_returns_volatility=list(dict.fromkeys(price_returns_volatility)),
+        provided_technical_indicators=list(dict.fromkeys(provided_technical_indicators)),
+        all_numeric_filtered=list(dict.fromkeys(all_numeric_filtered)),
     )
 
 
 def default_feature_set_for_model(model_name: str) -> str:
+    if model_name == "transformer":
+        return "price_technical_primary"
     if model_name in {"lstm", "gru", "arima_residual_lstm"}:
-        return "returns_volatility"
-    return "price_basic"
+        return "price_technical_primary"
+    return "raw_price_volume"
 
 
 def resolve_feature_columns(
@@ -168,6 +204,7 @@ def resolve_feature_columns(
     date_column: str,
     symbol_column: str,
     configured_groups: dict[str, list[str]] | None = None,
+    price_column: str = "adjclose",
 ) -> list[str]:
     if explicit_columns:
         return explicit_columns
@@ -177,6 +214,7 @@ def resolve_feature_columns(
         date_column,
         symbol_column,
         configured_groups=configured_groups,
+        price_column=price_column,
     )
     selected_set = feature_set if feature_set != "auto" else default_feature_set_for_model(model_name)
     feature_map = catalog.as_dict()
@@ -196,6 +234,7 @@ def resolve_feature_group_columns(
     date_column: str,
     symbol_column: str,
     configured_groups: dict[str, list[str]] | None = None,
+    price_column: str = "adjclose",
 ) -> list[str]:
     catalog = build_feature_catalog(
         frame,
@@ -203,6 +242,7 @@ def resolve_feature_group_columns(
         date_column,
         symbol_column,
         configured_groups=configured_groups,
+        price_column=price_column,
     )
     feature_map = catalog.as_dict()
     if group_name not in feature_map:

@@ -13,41 +13,51 @@ experiment:
   feature_columns: []
   feature_set: "auto"
   feature_groups:
-    sentiment_primary:
-      - "feargreed"
-    text_auxiliary: []
-  fusion_weights:
-    price: 0.7
-    sentiment: 0.3
-    text: 0.0
-  target_column: "target_next_close"
+    provided_technical_indicators: []
+  target_column: "target_next_adjclose"
+  price_column: "adjclose"
   date_column: "date"
   symbol_column: "symbol"
   prediction_horizon: 1
+  prediction_horizons: [1, 5]
   prediction_cutoff: "close"
   window_size: 20
+  window_sizes: [20, 60]
   train_ratio: 0.7
   val_ratio: 0.15
   test_ratio: 0.15
+  split_mode: "date"
   seed: 42
   output_dir: "outputs"
   generate_figures: true
   evaluation_modes:
     - "holdout"
     - "walk_forward"
-  walk_forward_steps: 20
+  walk_forward_steps: 0
   walk_forward_models:
     - "linear_regression"
     - "linear_regression_scaled"
     - "arima"
+    - "garch_return"
     - "lstm"
     - "gru"
+    - "transformer"
+    - "arima_residual_lstm"
+  selected_models:
+    - "linear_regression"
+    - "linear_regression_scaled"
+    - "arima"
+    - "garch_return"
+    - "lstm"
+    - "gru"
+    - "transformer"
     - "arima_residual_lstm"
   backtest_window_type: "expanding"
   early_stopping_patience: 5
   min_delta: 0.0001
   tune_arima_order: true
   extreme_volatility_quantile: 0.95
+  winsorize_limits: [0.01, 0.99]
 
 models:
   linear_regression: {}
@@ -61,6 +71,16 @@ models:
       - [5, 1, 0]
       - [2, 1, 2]
       - [3, 1, 3]
+  garch_return:
+    p: 1
+    q: 1
+    lags: 1
+    mean: "ARX"
+    dist: "normal"
+    order_grid:
+      - {p: 1, q: 1, lags: 1, mean: "ARX", dist: "normal"}
+      - {p: 1, q: 2, lags: 1, mean: "ARX", dist: "normal"}
+      - {p: 2, q: 1, lags: 1, mean: "ARX", dist: "normal"}
   lstm:
     hidden_size: 64
     num_layers: 1
@@ -72,6 +92,13 @@ models:
     hidden_size: 64
     num_layers: 1
     dropout: 0.0
+    epochs: 20
+    batch_size: 32
+    learning_rate: 0.001
+  transformer:
+    hidden_size: 64
+    num_layers: 2
+    dropout: 0.1
     epochs: 20
     batch_size: 32
     learning_rate: 0.001
