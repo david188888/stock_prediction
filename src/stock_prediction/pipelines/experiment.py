@@ -58,6 +58,10 @@ class ExperimentArtifacts:
     conclusion_path: Path | None = None
 
 
+def _progress(message: str) -> None:
+    print(f"[progress] {message}", flush=True)
+
+
 def _load_prepared_frame(config: AppConfig):
     pd = require_dependency("pandas", "Run `uv sync` to install runtime dependencies.")
     prepared_path = config.dataset.processed_dir / config.dataset.prepared_filename
@@ -203,14 +207,23 @@ def _resolve_hybrid_feature_columns(frame, config: AppConfig) -> list[str]:
         configured_groups=config.experiment.feature_groups,
         price_column=config.experiment.price_column,
     )
-    return list(
-        dict.fromkeys(
-            [ARIMA_RESIDUAL_CURRENT_COLUMN]
-            + raw_columns
-            + return_vol_columns
-            + technical_columns
+    hybrid_excluded = {
+        ARIMA_LINEAR_PRED_CURRENT_COLUMN,
+        ARIMA_LINEAR_PRED_NEXT_COLUMN,
+        HYBRID_TARGET_RESIDUAL_COLUMN,
+    }
+    return [
+        column
+        for column in list(
+            dict.fromkeys(
+                [ARIMA_RESIDUAL_CURRENT_COLUMN]
+                + raw_columns
+                + return_vol_columns
+                + technical_columns
+            )
         )
-    )
+        if column not in hybrid_excluded
+    ]
 
 
 def _create_hybrid_model(
@@ -529,7 +542,14 @@ def _build_prediction_frame(
 
 def _winsorize_train_frame(frame, feature_columns: list[str], quantile_bounds: tuple[float, float]):
     np = require_dependency("numpy", "Run `uv sync` to install runtime dependencies.")
+    pd = require_dependency("pandas", "Run `uv sync` to install runtime dependencies.")
     clipped = frame.copy()
+    available = [column for column in feature_columns if column in clipped.columns]
+    if available:
+        for column in available:
+            series = clipped[column]
+            numeric = pd.to_numeric(series, errors="coerce")
+            clipped[column] = series.mask(~np.isfinite(numeric), np.nan)
     bounds = {}
     lower_q, upper_q = quantile_bounds
     for column in feature_columns:
@@ -544,7 +564,15 @@ def _winsorize_train_frame(frame, feature_columns: list[str], quantile_bounds: t
 
 
 def _apply_bounds(frame, feature_columns: list[str], bounds: dict[str, tuple[float, float]]):
+    np = require_dependency("numpy", "Run `uv sync` to install runtime dependencies.")
+    pd = require_dependency("pandas", "Run `uv sync` to install runtime dependencies.")
     clipped = frame.copy()
+    available = [column for column in feature_columns if column in clipped.columns]
+    if available:
+        for column in available:
+            series = clipped[column]
+            numeric = pd.to_numeric(series, errors="coerce")
+            clipped[column] = series.mask(~np.isfinite(numeric), np.nan)
     for column in feature_columns:
         if column not in clipped.columns or column not in bounds:
             continue
@@ -599,7 +627,14 @@ def _sequence_refit_split(split: TimeSeriesSplit):
     )
 
 
-def _fit_sequence_holdout(split: TimeSeriesSplit, model_name: str, feature_columns: list[str], config: AppConfig):
+def _fit_sequence_holdout(
+    split: TimeSeriesSplit,
+    model_name: str,
+    feature_columns: list[str],
+    config: AppConfig,
+    *,
+    progress_label: str | None = None,
+):
     initial_windowed = scale_and_window(
         split=split,
         feature_columns=feature_columns,
@@ -613,6 +648,7 @@ def _fit_sequence_holdout(split: TimeSeriesSplit, model_name: str, feature_colum
         input_size=len(feature_columns),
         window_size=config.experiment.window_size,
     )
+    model.progress_label = f"[{model_name}] {progress_label} phase=holdout_selection" if progress_label else None
     validation_data = None
     if len(initial_windowed.val_x):
         validation_data = (initial_windowed.val_x, initial_windowed.val_y)
@@ -634,6 +670,7 @@ def _fit_sequence_holdout(split: TimeSeriesSplit, model_name: str, feature_colum
         input_size=len(feature_columns),
         window_size=config.experiment.window_size,
     )
+    final_model.progress_label = f"[{model_name}] {progress_label} phase=holdout_refit" if progress_label else None
     final_model.fit(final_windowed.train_x, final_windowed.train_y)
     predictions = final_model.predict(final_windowed.test_x)
     return final_model, predictions, training_history, int(best_epoch)
@@ -694,7 +731,7 @@ def _hybrid_feature_set_label() -> str:
     return "price_only_residual_hybrid"
 
 
-def _fit_hybrid_holdout(raw_split: TimeSeriesSplit, config: AppConfig):
+def _fit_hybrid_holdout(raw_split: TimeSeriesSplit, config: AppConfig, *, progress_label: str | None = None):
     order, selection_records = _select_arima_order(raw_split, config)
 
     _, train_augmented = _fit_arima_train_frame(raw_split.train, order, config)
@@ -717,6 +754,7 @@ def _fit_hybrid_holdout(raw_split: TimeSeriesSplit, config: AppConfig):
     )
 
     model = _create_hybrid_model(config, order, len(feature_columns))
+    model.progress_label = f"[arima_residual_lstm] {progress_label} phase=holdout_selection" if progress_label else None
     validation_data = None
     if len(selection_windowed.val_y):
         validation_data = (selection_windowed.val_x, selection_windowed.val_y)
@@ -747,6 +785,7 @@ def _fit_hybrid_holdout(raw_split: TimeSeriesSplit, config: AppConfig):
         winsorize_limits=config.experiment.winsorize_limits,
     )
     final_model = _create_hybrid_model(config, order, len(feature_columns), epochs_override=best_epoch)
+    final_model.progress_label = f"[arima_residual_lstm] {progress_label} phase=holdout_refit" if progress_label else None
     final_model.fit(
         {"close_series": combined_raw[config.experiment.price_column].to_numpy(dtype=float), "windows": final_windowed.train_x},
         final_windowed.train_y,
@@ -774,7 +813,16 @@ def _build_scaled_sequence_input(history_frame, current_row_frame, feature_colum
     return build_single_sequence_input(history_values, current_value, config.experiment.window_size)
 
 
-def _walk_forward_sequence_prediction(history_frame, row_frame, model_name: str, feature_columns: list[str], config: AppConfig, epochs_override: int | None):
+def _walk_forward_sequence_prediction(
+    history_frame,
+    row_frame,
+    model_name: str,
+    feature_columns: list[str],
+    config: AppConfig,
+    epochs_override: int | None,
+    *,
+    progress_label: str | None = None,
+):
     train_frame, _ = _winsorize_train_frame(history_frame, feature_columns, config.experiment.winsorize_limits)
     inference_x = _build_scaled_sequence_input(history_frame, row_frame, feature_columns, config)
     windowed = scale_and_window(
@@ -793,6 +841,7 @@ def _walk_forward_sequence_prediction(history_frame, row_frame, model_name: str,
         input_size=len(feature_columns),
         window_size=config.experiment.window_size,
     )
+    model.progress_label = progress_label
     model.fit(train_x, train_y)
     return float(model.predict(inference_x)[0])
 
@@ -919,6 +968,10 @@ def _walk_forward_predictions(
         elif model_name in {"lstm", "gru", "transformer"}:
             if feature_columns is None:
                 raise ValueError("Sequence walk-forward requires feature_columns.")
+            _progress(
+                f"symbol={sample_row[config.experiment.symbol_column].iloc[0]} "
+                f"model={model_name} stage=walk_forward step={step_index}/{max_steps}"
+            )
             predicted = _walk_forward_sequence_prediction(
                 history_samples,
                 sample_row,
@@ -926,6 +979,10 @@ def _walk_forward_predictions(
                 feature_columns,
                 config,
                 epochs_override,
+                progress_label=(
+                    f"[{model_name}] symbol={sample_row[config.experiment.symbol_column].iloc[0]} "
+                    f"phase=walk_forward step={step_index}/{max_steps}"
+                ),
             )
             feature_count = len(feature_columns)
             feature_set_label = config.experiment.feature_set
@@ -969,6 +1026,7 @@ def train_and_evaluate_model(config: AppConfig, model_name: str) -> ExperimentAr
     model_dir = ensure_dir(output_root / "models" / suffix / model_name)
 
     for symbol in symbols:
+        _progress(f"symbol={symbol} model={model_name} stage=prepare")
         symbol_frame = frame[frame[config.experiment.symbol_column] == symbol].copy()
         if len(symbol_frame) < max(40, config.experiment.window_size + config.experiment.prediction_horizon + 5):
             continue
@@ -1001,10 +1059,22 @@ def train_and_evaluate_model(config: AppConfig, model_name: str) -> ExperimentAr
         elif model_name in {"lstm", "gru", "transformer"}:
             feature_columns = _resolve_feature_columns(sample_split.train, model_name, config)
             feature_count = len(feature_columns)
-            model, predictions, log_rows, best_epoch = _fit_sequence_holdout(sample_split, model_name, feature_columns, config)
+            _progress(f"symbol={symbol} model={model_name} stage=holdout")
+            model, predictions, log_rows, best_epoch = _fit_sequence_holdout(
+                sample_split,
+                model_name,
+                feature_columns,
+                config,
+                progress_label=f"symbol={symbol}",
+            )
             test_samples = sample_split.test
         elif model_name == "arima_residual_lstm":
-            model, test_samples, predictions, selected_order, log_rows, best_epoch, feature_columns = _fit_hybrid_holdout(raw_split, config)
+            _progress(f"symbol={symbol} model={model_name} stage=holdout")
+            model, test_samples, predictions, selected_order, log_rows, best_epoch, feature_columns = _fit_hybrid_holdout(
+                raw_split,
+                config,
+                progress_label=f"symbol={symbol}",
+            )
             feature_count = len(feature_columns)
             feature_set_label = _hybrid_feature_set_label()
         else:
@@ -1046,6 +1116,7 @@ def train_and_evaluate_model(config: AppConfig, model_name: str) -> ExperimentAr
         model.save(model_path)
 
         if "walk_forward" in config.experiment.evaluation_modes and model_name in config.experiment.walk_forward_models:
+            _progress(f"symbol={symbol} model={model_name} stage=walk_forward")
             walk_forward_frame = _walk_forward_predictions(
                 raw_split,
                 sample_split,
@@ -1152,9 +1223,7 @@ def run_full_experiment(config: AppConfig, models: list[str] | None = None) -> l
 
     pd = require_dependency("pandas", "Run `uv sync` to install runtime dependencies.")
     all_metrics = [pd.read_csv(artifact.metrics_path) for artifact in artifacts]
-    leaderboard = pd.concat(all_metrics, ignore_index=True).sort_values(
-        ["experiment_key", "evaluation", "rmse", "mae"]
-    )
+    leaderboard = pd.concat(all_metrics, ignore_index=True).sort_values(["experiment_key", "evaluation", "rmse", "mae"])
     leaderboard_path = config.experiment.output_dir / "metrics" / "leaderboard.csv"
     leaderboard_summary_path = config.experiment.output_dir / "metrics" / "leaderboard.md"
     conclusions_path = config.experiment.output_dir / "metrics" / "conclusions.md"

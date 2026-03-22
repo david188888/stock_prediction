@@ -10,20 +10,13 @@ dist/
 build/
 *.egg-info/
 
-data/raw/*
-!data/raw/.gitkeep
-data/interim/*
-!data/interim/.gitkeep
-data/processed/*
-!data/processed/.gitkeep
-
-outputs/metrics/*
-!outputs/metrics/.gitkeep
-outputs/predictions/*
-!outputs/predictions/.gitkeep
-outputs/figures/*
-!outputs/figures/.gitkeep
-outputs/.cache/
+data/
+outputs/
 
 models/
 artifacts/
+configs/
+environment.yml
+outputs/
+tests/
+report.md

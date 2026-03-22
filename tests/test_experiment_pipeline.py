@@ -21,7 +21,10 @@ def test_hybrid_feature_columns_include_residual_and_technical_inputs():
             "volume": [10, 11, 12, 13, 14, 15],
             "feature_price_return_1": [0.0, 0.1, 0.1, 0.1, 0.1, 0.1],
             "RSIadjclose15": [20, 25, 30, 35, 40, 45],
+            "arima_linear_pred_current": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+            "arima_linear_pred_next": [1.1, 2.1, 3.1, 4.1, 5.1, 6.1],
             "arima_residual_current": [0.1, -0.2, 0.0, 0.3, -0.1, 0.2],
+            "target_residual": [0.2, -0.1, 0.3, 0.1, -0.2, 0.0],
         }
     )
 
@@ -30,6 +33,9 @@ def test_hybrid_feature_columns_include_residual_and_technical_inputs():
     assert "arima_residual_current" in feature_columns
     assert "RSIadjclose15" in feature_columns
     assert "adjclose" in feature_columns
+    assert "arima_linear_pred_current" not in feature_columns
+    assert "arima_linear_pred_next" not in feature_columns
+    assert "target_residual" not in feature_columns
 
 
 def test_date_split_uses_shared_calendar_boundaries():

@@ -56,7 +56,15 @@ def _aggregate_metrics(frame):
             "median_rmse": round(float(group["rmse"].median()), 6),
             "mean_mae": round(float(group["mae"].mean()), 6),
             "median_mae": round(float(group["mae"].median()), 6),
+            "mean_smape": round(float(group["smape"].mean()), 6) if "smape" in group.columns else pd.NA,
+            "median_smape": round(float(group["smape"].median()), 6) if "smape" in group.columns else pd.NA,
             "mean_da": round(float(group["da"].dropna().mean()), 6) if "da" in group.columns and group["da"].notna().any() else pd.NA,
+            "mean_up_precision": round(float(group["up_precision"].dropna().mean()), 6) if "up_precision" in group.columns and group["up_precision"].notna().any() else pd.NA,
+            "mean_up_recall": round(float(group["up_recall"].dropna().mean()), 6) if "up_recall" in group.columns and group["up_recall"].notna().any() else pd.NA,
+            "mean_up_f1": round(float(group["up_f1"].dropna().mean()), 6) if "up_f1" in group.columns and group["up_f1"].notna().any() else pd.NA,
+            "mean_down_precision": round(float(group["down_precision"].dropna().mean()), 6) if "down_precision" in group.columns and group["down_precision"].notna().any() else pd.NA,
+            "mean_down_recall": round(float(group["down_recall"].dropna().mean()), 6) if "down_recall" in group.columns and group["down_recall"].notna().any() else pd.NA,
+            "mean_down_f1": round(float(group["down_f1"].dropna().mean()), 6) if "down_f1" in group.columns and group["down_f1"].notna().any() else pd.NA,
             "best_symbol": ranked.iloc[0]["symbol"],
             "worst_symbol": ranked.iloc[-1]["symbol"],
         }
@@ -81,7 +89,15 @@ def _aggregate_metrics(frame):
             "median_rmse",
             "mean_mae",
             "median_mae",
+            "mean_smape",
+            "median_smape",
             "mean_da",
+            "mean_up_precision",
+            "mean_up_recall",
+            "mean_up_f1",
+            "mean_down_precision",
+            "mean_down_recall",
+            "mean_down_f1",
             "best_symbol",
             "worst_symbol",
         ]
@@ -120,8 +136,11 @@ def save_conclusion_markdown(path: Path, frame) -> None:
         prefix = ""
         if "experiment_key" in row:
             prefix = f"[{row['experiment_key']}] "
+        smape_value = row["mean_smape"] if "mean_smape" in row else "NA"
+        up_f1_value = row["mean_up_f1"] if "mean_up_f1" in row else "NA"
+        down_f1_value = row["mean_down_f1"] if "mean_down_f1" in row else "NA"
         lines.append(
-            f"- {prefix}`{row['evaluation']}` 最优模型是 `{row['model']}`，平均 RMSE 为 `{row['mean_rmse']}`，方向准确率为 `{row['mean_da']}`，最佳股票为 `{row['best_symbol']}`。"
+            f"- {prefix}`{row['evaluation']}` 最优模型是 `{row['model']}`，平均 RMSE 为 `{row['mean_rmse']}`，平均 MAE 为 `{row['mean_mae']}`，平均 SMAPE 为 `{smape_value}`，方向准确率为 `{row['mean_da']}`，上涨 F1 为 `{up_f1_value}`，下跌 F1 为 `{down_f1_value}`，最佳股票为 `{row['best_symbol']}`。"
         )
 
     if "experiment_key" in best_by_eval.columns:
@@ -147,7 +166,10 @@ def save_conclusion_markdown(path: Path, frame) -> None:
         overlap = hybrid.join(arima, lsuffix="_hybrid", rsuffix="_arima", how="inner")
         if not overlap.empty:
             delta = float((overlap["rmse_hybrid"] - overlap["rmse_arima"]).mean())
-            lines.append(f"- hybrid 相对 ARIMA 的平均 RMSE 改变量为 `{delta:.6f}`。负值表示 hybrid 更优。")
+            smape_delta = float((overlap["smape_hybrid"] - overlap["smape_arima"]).mean()) if {"smape_hybrid", "smape_arima"}.issubset(overlap.columns) else float("nan")
+            lines.append(
+                f"- hybrid 相对 ARIMA 的平均 RMSE 改变量为 `{delta:.6f}`，平均 SMAPE 改变量为 `{smape_delta:.6f}`。负值表示 hybrid 更优。"
+            )
 
     deep_models = frame[frame["model"].isin(["lstm", "gru"])]
     if not deep_models.empty:

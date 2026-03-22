@@ -100,9 +100,9 @@ Default modeling choices:
 - Walk-forward evaluation:
   expanding window over the full test period by default
 - Main metrics:
-  `MAE`, `MSE`, `RMSE`
+  `RMSE`, `MAE`, `SMAPE`
 - Supplementary metric:
-  directional accuracy `DA`
+  directional accuracy `DA`, plus `Up/Down Precision`, `Up/Down Recall`, and `Up/Down F1`
 
 ## Outputs
 

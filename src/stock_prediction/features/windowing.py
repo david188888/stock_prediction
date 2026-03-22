@@ -191,12 +191,26 @@ def build_single_sequence_input(history_values, current_value, window_size: int)
     return window.reshape(1, window_size, -1)
 
 
+def _sanitize_feature_frame(frame, feature_columns: list[str]):
+    np = require_dependency("numpy", "Run `uv sync` to install runtime dependencies.")
+    pd = require_dependency("pandas", "Run `uv sync` to install runtime dependencies.")
+    cleaned = frame.copy()
+    available = [column for column in feature_columns if column in cleaned.columns]
+    if not available:
+        return cleaned
+    for column in available:
+        series = cleaned[column]
+        numeric = pd.to_numeric(series, errors="coerce")
+        cleaned[column] = series.mask(~np.isfinite(numeric), np.nan)
+    return cleaned
+
+
 def _winsorize_frame(frame, feature_columns: list[str], quantile_bounds: tuple[float, float]):
     np = require_dependency("numpy", "Run `uv sync` to install runtime dependencies.")
     if frame.empty:
         return frame.copy(), {}
     lower_q, upper_q = quantile_bounds
-    clipped = frame.copy()
+    clipped = _sanitize_feature_frame(frame, feature_columns)
     bounds = {}
     for column in feature_columns:
         values = clipped[column]
@@ -210,7 +224,7 @@ def _winsorize_frame(frame, feature_columns: list[str], quantile_bounds: tuple[f
 
 
 def _apply_winsorize(frame, feature_columns: list[str], bounds: dict[str, tuple[float, float]]):
-    clipped = frame.copy()
+    clipped = _sanitize_feature_frame(frame, feature_columns)
     for column in feature_columns:
         if column not in clipped.columns:
             continue
